@@ -1,0 +1,259 @@
+import configparser
+import paramiko
+from datetime import datetime, timedelta
+import ibm_db
+from prettytable import PrettyTable
+import time 
+import glob, os
+import random
+
+
+class smokeTest():
+
+    def __init__(self,environmentList) :       
+
+        try:
+            self.thisfolder = os.path.dirname(os.path.abspath(__file__))
+            self.initfile = os.path.join(self.thisfolder, 'DCNanalyserConfigFile.properties')
+            print(self.initfile)
+            self.config = configparser.RawConfigParser()
+            self.config.read(self.initfile)
+            self.environmentList=environmentList
+        except Exception as ex:
+            print("error occured reading config file: "+str(ex))
+    # current dateTime
+        self.now = datetime.now()
+        self.date_time_str = self.now.strftime("%Y-%m-%d-%H.%M.%S")
+        print('DateTime String:', self.date_time_str)
+
+        self.txfname='RED_TX_INS_DROP_FEP'+self.date_time_str+'.DAT'
+        self.ilfname='RED_IL_PRO_DROP_FEP'+self.date_time_str+'.DAT'
+        self.txtempfile = os.path.join(self.thisfolder,'TEMP_RED_TX_INS_DROP_FEP.DAT')
+        self.iltempfile = os.path.join(self.thisfolder,'TEMP_RED_IL_PRO_DROP_FEP.DAT')
+        self.today = datetime.today() 
+
+        # Dictionary for all the calims status messages
+        self.switcher={"1170":"claim fianlized in FEP.",\
+                "1110":"claim finalized in FEP.",\
+                "1158Z08":"claim deferred in FEP.",\
+                "1181000":" claim waiting for FEPSL processing.",\
+                "1188TR1":"claim in transmission.",\
+                "7":"Claim not yet been processed by RTIS."
+                }  
+        print("Done initialising smokeTest class") 
+
+# Function to get connewction object for Db query calls
+    def getDBconn(self,env):  
+        try:        
+            if env in["uit1","uit2","uit3","uit7","uit8"] :
+                sourcedb="uit"
+                print ('DatabaseSection.'+sourcedb+'.database.dbname')
+            if env in ["sit1","sit2","sit3"]:
+                sourcedb="sit"  
+                print ('DatabaseSection.'+sourcedb+'.database.dbname')  
+            if env in ["uat1","uat2","uat3","sit7","sit8"]:
+                sourcedb="uat"   
+                print ('DatabaseSection.'+sourcedb+'.database.dbname') 
+            dbname =self.config.get('DatabaseSection', sourcedb+'.database.dbname')
+            server =  self.config.get('DatabaseSection', sourcedb+'.database.server')
+            port  = self.config.get('DatabaseSection', sourcedb+'.database.port')
+            userid =  self.config.get('DatabaseSection', sourcedb+'.database.user')
+            password =  self.config.get('DatabaseSection', sourcedb+'.database.password')
+            conn = ibm_db.connect("DATABASE="+dbname+";HOSTNAME="+server+";PORT="+port+";PROTOCOL=TCPIP;UID="+userid+";PWD="+password+";", "", "") 
+            print (ibm_db.conn_errormsg)
+            print (ibm_db.conn_error)
+            print(conn)
+            return conn 
+        except Exception as e :
+            print("Error connecting to Database, please check userid and password"+str(e))    
+            
+        
+    # function to print tables and mesages to output files
+    def printtofile(self,file,t,mode="a+"):
+        file = os.path.join(self.thisfolder,file+".txt")
+        f= open(file,mode)
+        f.write(str(t)) 
+        f.write("\n")
+        f.close() 
+
+    # function to edit Temp files to drop the claims files
+    def fileeditor(self,tempfname,fname):
+        try:
+                
+            with open(tempfname, 'r') as file:
+                data = file.read() 
+                data = data.replace("XXXXXXXX", self.today.strftime("%Y%m%d"))
+                data = data.replace("YYYY", str(random.randint(1000,9999)))
+            with open(fname, 'w') as file:
+                file.write(data)
+            print("Text replaced and files are ready to transfer ")
+        except Exception as e :
+            print("Error editing file"+str(e))     
+    
+    # function to copy the files on to the fileserver
+    def copytoserver (self,fname,envi):
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            if "UIT" in envi : fileserver="uit.server"
+            if "SIT" in envi or "UAT" in envi : fileserver="sit.server"
+            print (fileserver)
+            server=self.config.get('UploadFileServer', fileserver)
+            username=self.config.get('UploadFileServer', 'userid')
+            password=self.config.get('UploadFileServer', 'password')   
+            remotepath='/claim/data/input/EDI/RED/'+envi+'/'+fname
+            print("server:"+server)
+            print("remote path:"+remotepath)
+            ssh.connect(server, username=username, password=password)
+            sftp = ssh.open_sftp()
+            sftp.put(fname, remotepath)
+            sftp.close()
+            ssh.close()
+            print("file copied")
+        except Exception as e :
+            print("Error occured copying files "+str(e))    
+
+    # function to run query for finding the XMITSN_IDs
+    def findxmisnid (self,conn,txfname,ilfname,date_time_str,envi):
+            sql = "select FILE_XMITSN_ID as "+envi+"_FILE_XMITSN_ID"+", RCVD_TS, CLM_CNT, RTRN_CD, ERR_MSG_TXT, INPUT_FILE_NM from "\
+            +self.config.get('Schema',envi)\
+            +".FILE_CTL where ((INPUT_FILE_NM = '"\
+            +txfname\
+            +"' or INPUT_FILE_NM = '"\
+            +ilfname\
+            +"') ) order by RCVD_TS desc with ur fetch first 22 rows only;"
+            print(sql)
+            stmt = ibm_db.exec_immediate(conn, sql)
+            result = ibm_db.fetch_assoc(stmt)
+            print(result)
+            try:
+                t = PrettyTable(result.keys())
+                XMITSN_ID = []
+
+                # i=0
+                while result != False:       
+                        XMITSN_ID.append(result[envi+"_FILE_XMITSN_ID"])
+                        print(XMITSN_ID)
+                        # i += 1
+                        t.add_row(result.values())      
+                        result = ibm_db.fetch_assoc (stmt)
+                self.printtofile("output",t)
+                print(t)
+                print(XMITSN_ID)
+                return XMITSN_ID
+            except Exception as err :
+                self.printtofile("output","No Claims Loaded\n")
+                self.printtofile("Somketestresults","No Claims Loaded\n")  
+                print(f"Unexpected {err=}, {type(err)=}")
+
+    # function to run query for finding the claim status
+    def runquery (self,conn,XMITSN_ID,envi):
+        schema=self.config.get('Schema',envi)
+        print(schema)
+        print(type(schema))
+
+        try:
+            sql = "select a.CLM_XMITSN_ID as "+envi+"_xmitsn_id,a.CLM_ID, a.DCN, a.CORP_ENT_CD, a.CURR_CLM_STA_CD, a.CLM_STA_CD, a.CLM_STA_RSN_CD, a.PLCY_ID, b.wrk_itm_typ_cd, c.pln_cd, a.grp_nbr " \
+            + "from "+schema+".CLM  a " \
+            + "join "+schema+".CLM_detl b on a.CLM_ID = b.CLM_ID "\
+            + "join "+schema+".CLM_sub c on a.CLM_ID = c.CLM_ID "\
+            + "where (a.CLM_XMITSN_ID BETWEEN "\
+            + str(XMITSN_ID[0])+"0000000"\
+            + " and "\
+            + str(XMITSN_ID[0])+"9999999" \
+            + " OR a.CLM_XMITSN_ID BETWEEN "\
+            + str(XMITSN_ID[1])+"0000000"\
+            + " and  "\
+            + str(XMITSN_ID[1])+"9999999" \
+            + " ) AND a.RCVD_DT >  '2023-02-01' with ur;"
+           
+
+
+            print(sql)      
+
+            stmt = ibm_db.exec_immediate(conn, sql)
+            result = ibm_db.fetch_assoc(stmt)
+            try:   
+                t = PrettyTable(result.keys())
+                while result != False:
+                        t.add_row(result.values()) 
+                        self.claimstatuscheck(result)
+                        result = ibm_db.fetch_assoc (stmt)
+
+                self.printtofile("output",t)
+                self.printtofile("output","\n")
+                self.printtofile("Somketestresults",t)
+                self.printtofile("Somketestresults","\n")
+                print(t) 
+            except Exception as err:
+                self.printtofile("output","No Claims Loaded\n")
+                self.printtofile("Somketestresults","No Claims Loaded\n") 
+                print(f"Unexpected in loop1{err=}, {type(err)=}")
+
+        except Exception as err:
+            self.printtofile("output","No Claims Loaded\n")
+            self.printtofile("Somketestresults","No Claims Loaded\n")
+            print(f"Unexpected in loop2 {err=}, {type(err)=}")         
+
+    # function to do a claim status check and get the wordings from dictionary
+    def claimstatuscheck(self,result):
+        claimstatus=str( result["CURR_CLM_STA_CD"]) + str( result["CLM_STA_CD"]) +  str( result["CLM_STA_RSN_CD"])
+        claimstatus=str( result["CORP_ENT_CD"])+self.switcher.get(claimstatus.strip(),"")+" "
+        self.printtofile("Somketestresults",claimstatus)   
+        print(claimstatus)  
+
+
+    # Actual calls happen from here 
+
+    # we create output files with some environment info and date 
+    def runsmoketestquery(self):
+        print("in method to run to smoke test ")
+
+        self.printtofile("output","Smoke test results for Environments:"+str(self.environmentList)+"\nDate: "+str(self.date_time_str)+"\n"*3,"w+")
+        self.printtofile("Somketestresults","Smoke test results for Environments:"+str(self.environmentList)+"\nDate: "+str(self.date_time_str)+"\n"*3,"w+")
+
+        # editing the temp files and dropping into remote fileserver
+        print ("Preparing files to drop ")
+        try: 
+            self.fileeditor(self.txtempfile,self.txfname)
+            self.fileeditor(self.iltempfile,self.ilfname)
+        except:
+            print("Error occured while editing files")
+
+        print("copying files to remote server ")
+        for envi in self.environmentList:
+            print (envi)
+            try :
+                self.copytoserver(self.txfname,envi)
+                self.copytoserver(self.ilfname,envi)
+            except:
+                print("Error occured while copying files to server")    
+        sleeptime = self.config.get('Default', 'waittime')
+        print (f"waiting {sleeptime} secs before runinng DB queries")
+        time.sleep(int(sleeptime))
+
+        # querying DB fro getting XMITSN_IDs and claims status 
+        print ("querying Database to get the results and making output file")
+
+        for envi in self.environmentList:
+
+            conn = self.getDBconn(envi)
+            self.printtofile("output","Environment: "+envi+"\n")
+            resultarray=self.findxmisnid (conn,self.txfname,self.ilfname,self.date_time_str,envi)
+            self.printtofile("Somketestresults","Environment: "+envi)
+            if (resultarray):
+                print(resultarray)
+                conn = self.getDBconn(envi)                
+                self.runquery (conn,resultarray,envi)
+
+        try:
+            print ("Deleting temp files ")
+
+            for f in glob.glob("RED*DROP_FEP*.DAT"):
+                os.remove(f)
+        
+        except:
+            print("Error while deleting temp files")
+
+   
+
