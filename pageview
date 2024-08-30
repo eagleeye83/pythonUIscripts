@@ -1,0 +1,156 @@
+import customtkinter
+from Utilities import *
+from DCNanalyser import *
+from Smoketest import *
+import sys
+import threading
+
+
+class App(customtkinter.CTk):
+    def __init__(self):
+        super().__init__()
+
+        # configure grid system (3x2 grid)
+        self.geometry("800x600")
+        self._set_appearance_mode("system")
+        self._windows_set_titlebar_color("dark")
+        # self._windows_set_titlebar_color("Blue")
+        self.grid_rowconfigure((0,1,2),weight=2)       
+        self.grid_columnconfigure((0,1,2,3,4,5) ,weight=1)
+        self.title("FEPSL Helpertool")
+       
+       
+    
+
+        # create multiple pages (frames)
+        self.page_4 = customtkinter.CTkFrame(master=self, fg_color=None)
+        self.page_1 = customtkinter.CTkFrame(master=self, fg_color=None)
+        self.page_2 = customtkinter.CTkFrame(master=self, fg_color=None)
+        self.page_3 = customtkinter.CTkFrame(master=self, fg_color=None)
+
+
+        # save all pages in list and add them to the window with grid manager
+        self.all_pages = [self.page_1, self.page_2, self.page_3]
+        for page in self.all_pages:
+            page.grid(row=0, column=2 ,columnspan=4,rowspan=2,padx=10,pady=10,sticky="nsew")
+            page.grid_columnconfigure((0,1,2,3,4,5,6,7),weight=1)
+            page.grid_rowconfigure((0,1,2,3,4,5,6,7,8,9,10,11),weight=1)
+        self.page_4.grid(row=0, column=0,rowspan=3,padx=10,pady=10,sticky="nsew")  
+        self.label_13= customtkinter.CTkLabel(master=self, text="   Logs :")
+        self.label_13.grid(row=1, column=1 ,columnspan=5,rowspan=1,padx=1,pady=1,sticky="sw")
+        self.textbox= customtkinter.CTkTextbox(master=self, corner_radius=0)
+        self.textbox.grid(row=2, column=1 ,columnspan=5,rowspan=1,padx=10,pady=10,sticky="nsew")
+
+        # add widgets to pages12
+        
+        self.label_10 = customtkinter.CTkLabel(master=self.page_1, text="DCN :")
+        self.label_10.grid(row=1,column=1,pady=1,sticky="w")
+        self.c11 = customtkinter.CTkCheckBox(master=self.page_1, text="downloadlogs",onvalue="on", offvalue="off")
+        self.c11.grid(row=1,column=3,pady=1,sticky="w")
+        self.c12 = customtkinter.CTkCheckBox(master=self.page_1, text="environmentcheck",onvalue="on", offvalue="off")
+        self.c12.grid(row=2,column=3,pady=1,sticky="w")
+        self.entry_10 = customtkinter.CTkEntry(master=self.page_1, placeholder_text="dcn")
+        self.entry_10.grid(row=1,column=2,pady=1,sticky="w")
+        self.label_11 = customtkinter.CTkLabel(master=self.page_1, text="Environment :")
+        self.label_11.grid(row=2,column=1,pady=1,sticky="w")
+        self.entry_11 = customtkinter.CTkEntry(master=self.page_1, placeholder_text="environment")
+        self.entry_11.grid(row=2,column=2,pady=1,sticky="w")            
+        sys.stdout = TextRedirector(self.textbox, "stdout")
+        sys.stderr = TextRedirector(self.textbox, "stderr")
+
+        self.label_3 = customtkinter.CTkLabel(master=self.page_3, text="Environment Check")
+        self.label_3.grid(row=0, column=0)
+        
+
+        # create buttons to select a page
+        self.button_41 = customtkinter.CTkButton(master=self.page_4, text="DCN Analyser", command=lambda: self.select_page(self.page_1))
+        self.button_41.pack(padx=1,pady=20)
+        self.button_42 = customtkinter.CTkButton(master=self.page_4, text="Smoketest", command=lambda: self.select_page(self.page_2))
+        self.button_42.pack(padx=1,pady=20)
+        self.button_43 = customtkinter.CTkButton(master=self.page_4, text="Environment Check", command=lambda: self.select_page(self.page_3))
+        self.button_43.pack(padx=1,pady=20)
+        self.label_41 = customtkinter.CTkLabel(master=self.page_4, text="Issues contact:Nishanth_Lutukurthy@bcbsil.com",font=("Helvetica", 10) )
+        self.label_41.pack(side =customtkinter.BOTTOM )
+        # t1= threading.Thread(target= printtotxtbox.screenwrite,args=(self.entry_10.get(),self.entry_11.get(),self.entry_12.get()))
+        # self.button_11= customtkinter.CTkButton(master=self.page_1, text="SUBMIT", command=lambda: threading.Thread(target= printtotxtbox.screenwrite,args=(self.entry_10.get(),self.entry_11.get(),self.entry_12.get())).start())
+        self.button_11= customtkinter.CTkButton(master=self.page_1, text="SUBMIT", command=lambda: threading.Thread(target= self.dcnanalyser    ,args=(self.entry_10.get(),self.entry_11.get(),self.c11.get(),self.c12.get())).start())
+
+        self.button_11.grid(row=3,column=2,pady=1,sticky="w")       
+
+        self.label_2 = customtkinter.CTkLabel(master=self.page_2, text="Select Environments to run the Smoketest:")
+        self.label_2.place(x=10,y=10)
+
+        self.c21 = customtkinter.CTkCheckBox(master=self.page_2, text="uit1",onvalue="UIT1", offvalue="off")
+        self.c21.place(x=10,y=40)
+        self.c22 = customtkinter.CTkCheckBox(master=self.page_2, text="uit2",onvalue="UIT2", offvalue="off")
+        self.c22.place(x=10,y=80)
+        self.c23 = customtkinter.CTkCheckBox(master=self.page_2, text="uit3",onvalue="UIT3", offvalue="off")
+        self.c23.place(x=10,y=120)
+        
+        self.c24 = customtkinter.CTkCheckBox(master=self.page_2, text="sit1",onvalue="SIT1", offvalue="off")
+        self.c24.place(x=90,y=40)
+        self.c25 = customtkinter.CTkCheckBox(master=self.page_2, text="sit2",onvalue="SIT2", offvalue="off")
+        self.c25.place(x=90,y=80)
+        self.c26 = customtkinter.CTkCheckBox(master=self.page_2, text="sit3",onvalue="SIT3", offvalue="off")
+        self.c26.place(x=90,y=120)
+        self.c27 = customtkinter.CTkCheckBox(master=self.page_2, text="uat1",onvalue="UAT1", offvalue="off")
+        self.c27.place(x=170,y=40)
+        self.c28 = customtkinter.CTkCheckBox(master=self.page_2, text="uat2",onvalue="UAT2", offvalue="off")
+        self.c28.place(x=170,y=80)
+        self.c29 = customtkinter.CTkCheckBox(master=self.page_2, text="uat3",onvalue="UAT3", offvalue="off")
+        self.c29.place(x=170,y=120)
+        self.c30 = customtkinter.CTkCheckBox(master=self.page_2, text="uit7",onvalue="UIT7", offvalue="off")
+        self.c30.place(x=10,y=160)
+        self.c31 = customtkinter.CTkCheckBox(master=self.page_2, text="uit8",onvalue="UIT8", offvalue="off")
+        self.c31.place(x=10,y=200)
+        self.c32 = customtkinter.CTkCheckBox(master=self.page_2, text="sit7",onvalue="SIT7", offvalue="off")
+        self.c32.place(x=90,y=160)
+        self.c33 = customtkinter.CTkCheckBox(master=self.page_2, text="sit8",onvalue="SIT8", offvalue="off")
+        self.c33.place(x=90,y=200)
+
+        self.button_21= customtkinter.CTkButton(master=self.page_2, text="SUBMIT", command=lambda: threading.Thread(target= self.runsmoketest).start())
+        self.button_21.place(x=300,y=120)
+
+        self.button_21= customtkinter.CTkButton(master=self.page_2, text="Select All", command=lambda: threading.Thread(target= self.selectall).start())
+        self.button_21.place(x=300,y=90)
+
+        # select initial page
+        self.select_page(self.page_1)     
+
+    def select_page(self, selected_page: customtkinter.CTkFrame):
+        # make selected page visible
+        selected_page.grid(row=0, column=1,columnspan=5,rowspan=3,padx=10,pady=10, sticky="nsew")
+        # remove all other pages
+        for page in self.all_pages:
+            if page is not selected_page:
+                page.grid_forget()
+
+                
+
+    def dcnanalyser(self,dcn,envi,downloadlogs,envcheck):
+        print(f"Started generating report for DCN :{dcn},in envi: {envi} with logs download option: {downloadlogs} and environemnt check option: {envcheck}")
+        mydcnAanalyser=dcnAanalyser(dcn,envi,downloadlogs,envcheck)
+        print("End of initializing dcnanalyser class")
+        mydcnAanalyser.runDCNanalyser()
+        print("End of scripts ,Please check the target folder for reports and logs")
+        print("=="*50)
+        
+
+    def runsmoketest(self):
+        envilist=[]
+        for checkbutton in [self.c21,self.c24,self.c27,self.c22,self.c25,self.c28,self.c23,self.c26,self.c29,
+                            self.c30,self.c31,self.c32,self.c33]:
+            if (checkbutton.get()!="off"):
+                envilist.append(checkbutton.get())
+        print(envilist) 
+        mysmokeTest=smokeTest(envilist)
+        mysmokeTest.runsmoketestquery()
+        print("End of scripts ,Please check the outputfile")
+
+    def selectall(self):       
+        for checkbutton in [self.c21,self.c22,self.c23,self.c24,self.c25,self.c26,self.c27,self.c28,self.c29,
+                            self.c30,self.c31,self.c32,self.c33]:
+             checkbutton.select()
+                  
+
+
