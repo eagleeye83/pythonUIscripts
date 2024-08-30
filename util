@@ -1,0 +1,26 @@
+import time 
+
+class printtotxtbox():
+    
+    def screenwrite(dcn,envi,downloadlogs):
+        for _ in range(10):
+            print(f"dcn:{dcn}, envi:{envi}, downloadlogs:{downloadlogs}")
+            # print(f"message inserted in text box: {i}")
+            time.sleep(2)
+
+      
+
+        
+
+class TextRedirector(object):
+    def __init__(self, widget, tag="stdout"):
+        self.widget = widget
+        self.tag = tag
+
+    def write(self, string):
+        self.widget.configure(state="normal")
+        self.widget.insert("end", string, (self.tag,))
+        self.widget.configure(state="disabled")   
+
+    def flush(self):
+        pass
