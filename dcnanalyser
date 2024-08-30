@@ -1,0 +1,337 @@
+
+import configparser
+import paramiko
+from datetime import datetime, timedelta
+import ibm_db
+from prettytable import PrettyTable
+import time 
+import glob, os
+
+
+class dcnAanalyser():
+    def __init__(self,dcn,envi,downloadlogs,envcheck):
+   
+        self.thisfolder = os.path.dirname(os.path.abspath(__file__))
+        self.initfile = os.path.join(self.thisfolder, 'DCNanalyserConfigFile.properties')
+        print(self.initfile)
+        self.config = configparser.RawConfigParser()
+        self. config.read(self.initfile)
+        self.now = datetime.now()
+        self.date_time_str = self.now.strftime("%Y-%m-%d-%H.%M.%S")
+        self.dcn=dcn
+        self.envi=envi
+        self.downloadlogs=downloadlogs
+        self.envcheck=envcheck
+        self.switcher={"1170":"claim fianlized in FEP.",\
+                "1110":"claim finalized in FEP.",\
+                "1158Z08":"claim deferred in FEP.",\
+                "1181000":" claim waiting for FEPSL processing.",\
+                "1188TR1":"claim in transmission.",\
+                "7":"Claim not yet been processed by RTIS"
+                } 
+
+        print("Analysing DCN:"+self.dcn+" in "+envi+"\nDate:"+str(self.date_time_str)+"\n")
+        # print("Cleaning up target directory,removing old reports and logs")
+        self.targetFolder = os.path.join(self.thisfolder, dcn+"_"+self.envi+"_"+self.date_time_str)
+           
+        if not os.path.exists(self.targetFolder):
+            print("Creating Target directory") 
+            os.makedirs(self.targetFolder)
+
+        try: 
+            for file in os.scandir(self.targetFolder):
+                os.remove(file) 
+        except:
+            print("Target directory cleanup failed")    
+            print(self.targetFolder)
+       
+        try:        
+            self.dbname =self.config.get('DatabaseSection', self.envi[:-1]+'.database.dbname')
+            self.server =  self.config.get('DatabaseSection', self.envi[:-1]+'.database.server')
+            self.port  = self.config.get('DatabaseSection', self.envi[:-1]+'.database.port')
+            self.userid =  self.config.get('DatabaseSection', self.envi[:-1]+'.database.user')
+            self.password =  self.config.get('DatabaseSection', self.envi[:-1]+'.database.password')
+            self.conn = ibm_db.connect("DATABASE="+self.dbname+";HOSTNAME="+self.server+";PORT="+self.port+";PROTOCOL=TCPIP;UID="+self.userid+";PWD="+self.password+";", "", "")
+            print("Db connection successfull") 
+            
+        except Exception as e :
+            print("Error connecting to Database, please check userid and password"+str(e)) 
+
+
+
+
+
+    # Dictionary for all the calims status messages
+
+
+    # function to print tables and mesages to output files
+    def printtofile(self,file,t,mode="a+"):
+        file = os.path.join(self.targetFolder,file+".txt")
+        f= open(file,mode)
+        f.write(str(t)+"\n") 
+        f.close() 
+
+    # Function to get connewction object for Db query calls
+    # def getDBconn(self,env):  
+    #     try:        
+    #         dbname =self.config.get('DatabaseSection', env[:-1]+'.database.dbname')
+    #         server =  self.config.get('DatabaseSection', env[:-1]+'.database.server')
+    #         port  = self.config.get('DatabaseSection', env[:-1]+'.database.port')
+    #         userid =  self.config.get('DatabaseSection', env[:-1]+'.database.user')
+    #         password =  self.config.get('DatabaseSection', env[:-1]+'.database.password')
+    #         conn = ibm_db.connect("DATABASE="+dbname+";HOSTNAME="+server+";PORT="+port+";PROTOCOL=TCPIP;UID="+userid+";PWD="+password+";", "", "") 
+    #         return conn 
+    #     except Exception as e :
+    #         print("Error connecting to Database, please check userid and password"+str(e))   
+
+    # 2.	Check FEP_CLM_THRTLNG table to see if ‘NEXTFIRETIME’ or ‘ROW_VERSION’ column for ‘1seconds’ is moving:
+    # SELECT TASKID, ROW_VERSION, NEXTFIRETIME, VALIDFROMTIME, REPEATINTERVAL, NAME FROM schema.FSL_SCHED_TASK
+
+    def runNextfirequery(self):
+
+        sql = "SELECT TASKID, ROW_VERSION, NEXTFIRETIME, VALIDFROMTIME, REPEATINTERVAL, NAME FROM " \
+        +self.config.get('Schema',self.envi)+".FSL_SCHED_TASK where REPEATINTERVAL = '1seconds' with ur; " 
+        print(sql)
+        stmt = ibm_db.exec_immediate(self.conn, sql)
+        result = ibm_db.fetch_assoc(stmt)
+        try:   
+            t = PrettyTable(result.keys())
+            while result != False:
+                    t.add_row(result.values()) 
+                    NEXTFIRETIME= result["NEXTFIRETIME"]   
+                    result = ibm_db.fetch_assoc (stmt)
+            self.printtofile("report",t) 
+            return NEXTFIRETIME
+
+        except:
+            self.printtofile("report","\nIssue with running NextFiretime Query\n")
+        
+
+    # 3.	Check throttling table to see if the claim(s) in question are there.  If not, go to step#4.
+    # select * from schema.FEP_CLM_THRTLNG
+    # 4.	Check to see if any claims is currently processing:
+    # select * from schema.fep_clm_thrtlng where proc_sta_cd = '01'
+
+    def runthrottletablequery (self):
+
+        sql = "SELECT * FROM " \
+        +self.config.get('Schema',self.envi)+".FEP_CLM_THRTLNG "\
+        +"where DCN = '"+self.dcn+"' with ur;" 
+        print(sql)
+        stmt = ibm_db.exec_immediate(self.conn, sql)
+        result = ibm_db.fetch_assoc(stmt)
+        try: 
+            t = PrettyTable(result.keys())
+            while result != False:
+                    t.add_row(result.values()) 
+                    PROC_STA_CD=result["PROC_STA_CD"]
+                    result = ibm_db.fetch_assoc (stmt)
+            self.printtofile("report",t)
+            if PROC_STA_CD =="01":self.printtofile("report","DCN is currently processing\n")
+            
+
+        except:
+            self.printtofile ("report","\nNo results found for that DCN , DCN  has been processed or its not in throttle table\n")
+            
+
+    # 5.	Check if RTIS lobs are down.   Check for any rows in ‘PROC_AUTO_STOP_CD’ has value ‘1’. 
+    # select * from schema.RTIS_CLM_CTL_PROC where RTIS_LOB_NM like '%FEPSL%' and RTIS_CLM_CTL_PROC_CD = 'OEC'
+    #  select CORP_ENT_CD,RTIS_LOB_NM,PROC_AUTO_STOP_CD from TBCDB04.RTIS_CLM_CTL_PROC where RTIS_LOB_NM = 'FEPSL' and RTIS_CLM_CTL_PROC_CD = 'OEC'
+    def checkRTISLOBstatus(self):
+        sql= "select CORP_ENT_CD,RTIS_LOB_NM,PROC_AUTO_STOP_CD from "\
+        +self.config.get('Schema',self.envi)+".RTIS_CLM_CTL_PROC where RTIS_LOB_NM = 'FEPSL' and RTIS_CLM_CTL_PROC_CD = 'OEC' with ur;"
+        print(sql)
+        stmt = ibm_db.exec_immediate(self.conn, sql)
+        result = ibm_db.fetch_assoc(stmt)
+        try: 
+            t = PrettyTable(result.keys())
+            while result != False:
+                    t.add_row(result.values())
+                    result = ibm_db.fetch_assoc (stmt)
+            self.printtofile("report",t)
+            
+        except:
+            self.printtofile ("report","\nRTIS LOB table cannot be connected to check there status\n")
+
+
+
+    # select * from schema.clm_proc_excep where clm_id = (select clm_id from schema.clm where dcn = '02021131508W3550X') 
+
+    def checkexceptiontable(self):
+
+        sql = "select * from "+self.config.get('Schema',self.envi)+".clm_proc_excep where clm_id = (select clm_id from "+self.config.get('Schema',self.envi)+".clm where dcn = '"+self.dcn+"')"
+        print(sql)
+        stmt = ibm_db.exec_immediate(self.conn, sql)
+        result = ibm_db.fetch_assoc(stmt)
+        try: 
+            t = PrettyTable(result.keys())
+            while result != False:
+                    t.add_row(result.values())
+                    result = ibm_db.fetch_assoc (stmt)
+            self.printtofile("report",t)
+            
+        except:
+            self.printtofile ("report","\nexception table cannot be connected to check there status\n") 
+        # select clm_STA_CD,clm_STA_RSN_CD ,CORP_ENT_CD , PREADJCTN_SUB_TYP_CD from TBCDB04.clm where DCN = '02023164504W6530X';
+
+
+    def checkclaimstatus(self):
+        sql= "select DCN,CURR_CLM_STA_CD,clm_STA_CD,clm_STA_RSN_CD ,CORP_ENT_CD , PREADJCTN_SUB_TYP_CD from "\
+        +self.config.get('Schema',self.envi)+".clm where DCN like '"+self.dcn+"%"+"' with ur;"
+
+        print(sql)
+        stmt = ibm_db.exec_immediate(self.conn, sql)
+        result = ibm_db.fetch_assoc(stmt)
+        try: 
+            t = PrettyTable(result.keys())
+            while result != False:
+                    t.add_row(result.values())
+                    self.claimstatuscheck(result)
+                    result = ibm_db.fetch_assoc (stmt)
+            self.printtofile("report",t)
+            
+        except:
+            self.printtofile ("report","\nclaim status table cannot be connected to check there status\n")   
+
+
+    # Select * from TBCDB04.FEP_CLM_EVNT where DCN like '02023164504W6530X%’ order by EVNT_TS desc;
+    def checkeventstatus(self):
+        sql= "Select * from "+self.config.get('Schema',self.envi)+".FEP_CLM_EVNT where DCN like '"\
+        +self.dcn+"%' order by EVNT_TS desc with ur;"
+
+        print(sql)
+        stmt = ibm_db.exec_immediate(self.conn, sql)
+        result = ibm_db.fetch_assoc(stmt)
+        try: 
+            t = PrettyTable(result.keys())
+            while result != False:
+                    t.add_row(result.values())
+                    result = ibm_db.fetch_assoc (stmt)
+            self.printtofile("report",t)
+            
+        except:
+            self.printtofile ("report","\nclaim event table cannot be connected to check the status\n")  
+
+        # function to do a claim status check and get the wordings from dictionary
+    def claimstatuscheck(self,result):
+        claimstatus=str( result["CURR_CLM_STA_CD"]) + str( result["CLM_STA_CD"]) +  str( result["CLM_STA_RSN_CD"])
+        claimstatus=str( result["CORP_ENT_CD"])+self.switcher.get(claimstatus.strip(),"")
+        self.printtofile("report",claimstatus)   
+        print(claimstatus)  
+
+
+    # function to do a check JVM status 
+    def jvmStatuscheck(self):
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            # if "UIT" in envi : fileserver="uit"
+            # if "SIT" in envi : fileserver="sit"
+            # if "UAT" in envi : fileserver="uat"
+            fileserver=self.envi[0:3]
+            # if "UAT" in envi : server = config['FileServer']['uat.server'].split(",")
+            self.printtofile ("report",fileserver)
+            servers=self.config.get('FileServer', fileserver+".server").split(",")
+            username=self.config.get('FileServer',fileserver+".userid")
+            password=self.config.get('FileServer',fileserver+".password")
+            self.printtofile("report","server:"+str(servers))
+            for server in  servers:
+                
+                ssh.connect(server, username=username, password=password)
+                stdin, stdout, stderr = ssh.exec_command("ps -ef | grep -i fepcore-"+self.envi)
+                self.printtofile("report","remote command executed ")
+
+                jvm=False
+                for line in stdout:
+                    # # printtofile("report", line.strip('\n'))  
+                    if  "wasadmin" in line : jvm = True
+                self.printtofile("report", server+": "+self.envi+" JVM running") if (jvm) else self.printtofile("report", server+": "+self.envi+" JVM not running")
+            
+        except Exception as e :
+            self.printtofile("report","Error running remote command  "+str(e)) 
+
+    #  function to collect logs for given DCN
+    def collectLogsfn(self):
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            # if "uit" in envi : fileserver="uit"
+            # if "sit" in envi : fileserver="sit"
+            # if "uat" in envi : fileserver="uat"
+            fileserver=self.envi[0:3]
+            
+            # if "UAT" in envi : server = config['FileServer']['uat.server'].split(",")
+            self.printtofile ("report",fileserver)
+            servers=self.config.get('FileServer', fileserver+".server").split(",")
+            username=self.config.get('FileServer',fileserver+".userid")
+            password=self.config.get('FileServer',fileserver+".password")
+            # printtofile("report","server:"+str(servers))
+            for server in  servers:
+                
+                ssh.connect(server, username=username, password=password)
+                # if envi[:-1]=="uat" :
+                #     command="grep -i -h "+dcn+" /usr/WASLogs905/fepcore-"+envi+"-*/fepstrmlncore/debug*"
+                # else :
+                #     command="grep -i -h "+dcn+" /usr/WASLogs905/fepcore-"+envi+"-*/debug*"  
+
+
+                if self.envi[:-1]=="uit" or self.envi=="sit1" or self.envi=="sit2":
+                    command="grep -i -l "+self.dcn+" /usr/WASLogs905/fepcore-"+self.envi+"-*/debug*"
+                if self.envi in ["sit3","uat1","uat2","uat3"]:
+                    command="grep -i -l "+self.dcn+" /usr/WASLogs905/fepcore-"+self.envi+"-*/fepstrmlncore/debug*"    
+                if self.envi =="lnp":
+                    command="grep -i -l "+self.dcn+" /usr/WASLogs905/fepcore*/fepdebug*"    
+                
+
+                print(command)
+                stdin, stdout, stderr = ssh.exec_command(command)
+                self.printtofile("report","remote command executed to collect logs ")
+                # printtofile(envi+"logfile", "="*20+server+"="*20+"\n" )  
+                
+                for line in stdout:
+                    self.printtofile(self.envi+"logfile", line.strip('\n')) 
+                    print(" downloading respective log files")
+                    print(line.strip('\n').split("/")[-1])
+                    if self.envi[:-1]=="uat" : 
+                        outputfile=os.path.join(self.targetFolder, line.strip('\n').split("/")[-3].split("-")[-1]+line.strip('\n').split("/")[-1])
+                    if self.envi=="lnp" :  
+                        outputfile=os.path.join(self.targetFolder, line.strip('\n').split("/")[-3].split("-")[-1]+line.strip('\n').split("/")[-1])
+                        
+                    else:
+                        outputfile=os.path.join(self.targetFolder, line.strip('\n').split("/")[-1])   
+                    with ssh.open_sftp() as sftp:\
+                        sftp.get(line.strip('\n') ,outputfile) 
+                
+            
+        except Exception as e :
+            self.printtofile("report","Error running remote command to fetch logs  "+str(e))          
+
+    def runDCNanalyser(self):
+        self.printtofile("report","Report for DCN:"+self.dcn+" in "+self.envi+"\nDate:"+str(self.date_time_str)+"\n","w+")
+        self.printtofile("report","=="*80)         
+        self.printtofile("report","Checking Throtlle table movement")
+        NEXTFIRETIME=self.runNextfirequery()  
+        time.sleep(3)
+        NEXTFIRETIME=int(self.runNextfirequery())-int(NEXTFIRETIME)
+        self.printtofile ("report","FEP_CLM_THRTLNG table is moving\n")  if (NEXTFIRETIME>0) else self.printtofile ("report","FEP_CLM_THRTLNG table is not moving\n") 
+        if (len(self.dcn)==17):
+        # if (True):
+            self.printtofile("report","Checking for this "+self.dcn+" in Throtlle table ")
+            self.runthrottletablequery ()
+            self.printtofile("report","Checking for RTIS and LOB status")
+            self.checkRTISLOBstatus()
+            self.printtofile("report","Checking for claim status in claim table")
+            self.checkclaimstatus()
+            self.printtofile("report","Checking for claim in claim event table")
+            self.checkeventstatus()
+            self.printtofile("report","Checking for claim in exception table")
+            self.checkexceptiontable()
+        else :
+            print("Provided DCN is not valid , Please proide a valid DCN ")
+
+        if (self.envcheck=="on") :
+            self.jvmStatuscheck()
+        print(f"download logs option:{self.downloadlogs}")
+        if (self.downloadlogs=="on") :
+            print("Please check the downlaoded logs in target folder")
+            self.collectLogsfn() 
